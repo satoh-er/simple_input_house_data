@@ -1,8 +1,12 @@
 import os
 import functools
-from typing import List, Tuple
+import json
+from pathlib import Path
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 import pandas as pd
 import math
+
+SIMPLE_INPUT_R5_MODIFIED_VERSION = "2026-06-06-verification-1"
 
 
 # master_menseki = DedicatedAreaTable
@@ -1539,9 +1543,6 @@ def _get_template_xlsx(tatekata, structure) -> dict[str, pd.DataFrame]:
 # follows https://hc-energy.readthedocs.io/ja/latest/contents/02_02_spec_input.html
 # instead of writing an Excel file.
 
-import json
-from pathlib import Path
-from typing import Any, Dict, Iterable, Optional
 
 
 _DIRECTION_TO_HC = {
@@ -1658,6 +1659,199 @@ def _rac_equipments(equipment_id: int, room_id: int, floor_area: float) -> tuple
         },
     }
     return cooling, heating
+
+
+# -----------------------------------------------------------------------------
+# Verification helpers
+# -----------------------------------------------------------------------------
+_NEU_INDEX_BY_DIRECTION = {
+    "top": 0,
+    "n": 1,
+    "ne": 2,
+    "e": 3,
+    "se": 4,
+    "s": 5,
+    "sw": 6,
+    "w": 7,
+    "nw": 8,
+}
+
+
+def _boundary_layer_resistance(boundary: Dict[str, Any]) -> float:
+    """Return the sum of layer thermal resistances for a boundary."""
+    return sum(float(layer.get("thermal_resistance", 0.0)) for layer in boundary.get("layers", []))
+
+
+def _boundary_u_value_for_check(boundary: Dict[str, Any]) -> float:
+    """Return the boundary U-value before applying temp_dif_coef.
+
+    external_general_part stores the layer resistance instead of a direct
+    u_value.  The equivalent U-value is therefore reconstructed from the inside
+    convective resistance, the layer resistance and the outside heat-transfer
+    resistance.  external_opaque_part and external_transparent_part store
+    u_value directly.
+    """
+    btype = boundary.get("boundary_type")
+    if btype == "external_general_part":
+        r_si = 1.0 / float(boundary["h_c"])
+        r_layer = _boundary_layer_resistance(boundary)
+        r_se = float(boundary.get("outside_heat_transfer_resistance", 0.0))
+        r_total = r_si + r_layer + r_se
+        return 1.0 / r_total if r_total > 0.0 else 0.0
+    if btype in ["external_opaque_part", "external_transparent_part"]:
+        return float(boundary.get("u_value", 0.0))
+    return 0.0
+
+
+def _make_check_item(input_value: float, model_value: float, *, unit: str = "",
+                     abs_tol: float = 1.0e-3, rel_tol: float = 1.0e-3) -> Dict[str, Any]:
+    """Build one comparison record for the verification report."""
+    input_value = float(input_value)
+    model_value = float(model_value)
+    diff = model_value - input_value
+    rel_diff = diff / input_value if abs(input_value) > 1.0e-12 else 0.0
+    ok = abs(diff) <= max(abs_tol, abs(input_value) * rel_tol)
+    return {
+        "input": _r2(input_value),
+        "model": _r2(model_value),
+        "difference": _r2(diff),
+        "relative_difference": _r2(rel_diff),
+        "unit": unit,
+        "ok": bool(ok),
+    }
+
+
+def calculate_model_characteristics(model: Dict[str, Any], region: int) -> Dict[str, float]:
+    """Calculate checkable characteristics from the generated HLC input dict.
+
+    The returned values are calculated only from ``rooms`` and ``boundaries`` in
+    the generated model.  They can therefore be used to confirm whether the
+    Dictionary/JSON actually reproduces the simple input values.
+    """
+    room_by_id = {int(r["id"]): r for r in model.get("rooms", [])}
+    floor_by_room = {room.get("name", ""): float(room.get("floor_area", 0.0)) for room in model.get("rooms", [])}
+
+    A_MR = floor_by_room.get("main_occupant_room", 0.0)
+    A_OR = floor_by_room.get("other_occupant_room", 0.0)
+    A_NR = floor_by_room.get("non_occupant_room", 0.0)
+    A_total = A_MR + A_OR + A_NR
+
+    envelope_types = {"external_general_part", "external_opaque_part", "external_transparent_part", "ground"}
+
+    def is_artificial_same_use_bottom(boundary: Dict[str, Any]) -> bool:
+        # Same-use inner floors are represented as adiabatic external floors only
+        # for heat-load-calculation connectivity.  They are not part of the
+        # user's input A_env, so exclude them from input-vs-model checks.
+        return str(boundary.get("name", "")).endswith("_same_use_bottom_adiabatic")
+
+    A_env_model = sum(
+        float(b.get("area", 0.0))
+        for b in model.get("boundaries", [])
+        if b.get("boundary_type") in envelope_types and not is_artificial_same_use_bottom(b)
+    )
+
+    heat_loss = 0.0
+    m_c = 0.0
+    m_h = 0.0
+    neu_c, neu_h = get_neu_avg(region)
+
+    for b in model.get("boundaries", []):
+        btype = b.get("boundary_type")
+        if btype not in envelope_types or is_artificial_same_use_bottom(b):
+            continue
+        area = float(b.get("area", 0.0))
+        temp_dif_coef = float(b.get("temp_dif_coef", 1.0))
+        direction = b.get("direction")
+        u_value = _boundary_u_value_for_check(b)
+        heat_loss += area * u_value * temp_dif_coef
+
+        # Average solar heat gain coefficient check.  Only sun-struck external
+        # roofs/walls/doors/windows are counted.  Floors and ground surfaces are
+        # intentionally ignored because they do not receive solar radiation in
+        # this simplified model.
+        if not bool(b.get("is_sun_striked_outside", False)):
+            continue
+        if direction not in _NEU_INDEX_BY_DIRECTION:
+            continue
+        idx = _NEU_INDEX_BY_DIRECTION[direction]
+        if btype == "external_transparent_part":
+            eta = float(b.get("eta_value", 0.0))
+            m_c += area * eta * neu_c[idx] * 0.93
+            m_h += area * eta * neu_h[idx] * 0.51
+        elif btype in ["external_general_part", "external_opaque_part"]:
+            # 0.034 is the solar absorption conversion coefficient used in the
+            # revised simple-input calculation.
+            m_c += area * u_value * temp_dif_coef * neu_c[idx] * 0.034
+            m_h += area * u_value * temp_dif_coef * neu_h[idx] * 0.034
+
+    DD_H, DD_C = get_master_days(region)
+    eta_ac_model = 100.0 * m_c / A_env_model if A_env_model > 0.0 else 0.0
+    eta_ah_model = 100.0 * m_h / A_env_model if A_env_model > 0.0 else 0.0
+    eta_avg_model = (eta_ac_model * DD_C + eta_ah_model * DD_H) / max(DD_C + DD_H, 1)
+
+    return {
+        "total_floor_area": A_total,
+        "main_floor_area": A_MR,
+        "other_floor_area": A_OR,
+        "non_occupant_floor_area": A_NR,
+        "A_env": A_env_model,
+        "UA": heat_loss / A_env_model if A_env_model > 0.0 else 0.0,
+        "eta_ac": eta_ac_model,
+        "eta_ah": eta_ah_model,
+        "eta_avg": eta_avg_model,
+        "heat_loss_coefficient": heat_loss,
+    }
+
+
+def verify_estimated_characteristics(model: Dict[str, Any], *, region: int,
+                                     total_floor_area: float, main_floor_area: float,
+                                     other_floor_area: float, A_env: float, ua: float,
+                                     eta_ah: float, eta_ac: float,
+                                     abs_tol: float = 1.0e-2,
+                                     rel_tol: float = 1.0e-2) -> Dict[str, Any]:
+    """Compare simple inputs with characteristics recalculated from the model.
+
+    The check report is JSON-serializable and is intended to be stored in the
+    generated dictionary under ``_simple_input_verification``.
+    """
+    characteristics = calculate_model_characteristics(model, region)
+    DD_H, DD_C = get_master_days(region)
+    eta_avg_input = (float(eta_ac) * DD_C + float(eta_ah) * DD_H) / max(DD_C + DD_H, 1)
+    non_occupant_floor_area = float(total_floor_area) - float(main_floor_area) - float(other_floor_area)
+
+    items = {
+        "total_floor_area": _make_check_item(total_floor_area, characteristics["total_floor_area"], unit="m2", abs_tol=abs_tol, rel_tol=rel_tol),
+        "main_floor_area": _make_check_item(main_floor_area, characteristics["main_floor_area"], unit="m2", abs_tol=abs_tol, rel_tol=rel_tol),
+        "other_floor_area": _make_check_item(other_floor_area, characteristics["other_floor_area"], unit="m2", abs_tol=abs_tol, rel_tol=rel_tol),
+        "non_occupant_floor_area": _make_check_item(non_occupant_floor_area, characteristics["non_occupant_floor_area"], unit="m2", abs_tol=abs_tol, rel_tol=rel_tol),
+        "A_env": _make_check_item(A_env, characteristics["A_env"], unit="m2", abs_tol=abs_tol, rel_tol=rel_tol),
+        "UA": _make_check_item(ua, characteristics["UA"], unit="W/m2K", abs_tol=abs_tol, rel_tol=rel_tol),
+        "eta_ac": _make_check_item(eta_ac, characteristics["eta_ac"], unit="-", abs_tol=abs_tol, rel_tol=rel_tol),
+        "eta_ah": _make_check_item(eta_ah, characteristics["eta_ah"], unit="-", abs_tol=abs_tol, rel_tol=rel_tol),
+        "eta_avg": _make_check_item(eta_avg_input, characteristics["eta_avg"], unit="-", abs_tol=abs_tol, rel_tol=rel_tol),
+    }
+    return {
+        "ok": all(item["ok"] for item in items.values()),
+        "abs_tol": abs_tol,
+        "rel_tol": rel_tol,
+        "items": items,
+        "model_characteristics": {k: _r2(v) for k, v in characteristics.items()},
+        "note": "UA and eta values are recalculated from the generated Dictionary/JSON. Internal partitions are not included in A_env or UA.",
+    }
+
+
+def print_verification_report(verification: Dict[str, Any]) -> None:
+    """Pretty-print the verification report created by verify_estimated_characteristics."""
+    print("入力値と暖冷房負荷モデルの特性値の照合")
+    print("-------------------------------------------------")
+    for name, item in verification.get("items", {}).items():
+        status = "OK" if item.get("ok") else "NG"
+        unit = item.get("unit", "")
+        print(
+            f"{name:24s}: input={item['input']:12.6g}  "
+            f"model={item['model']:12.6g}  diff={item['difference']:12.6g}  {unit}  [{status}]"
+        )
+    print("overall:", "OK" if verification.get("ok") else "NG")
 
 
 def _add_external_general(boundaries: list[dict], *, room: str, name: str, area: float,
@@ -2009,12 +2203,19 @@ def create_heat_load_calc_input(region: int, total_floor_area: float, main_floor
                                 eta_ah: float, eta_ac: float, tatekata: str,
                                 structure: str = "床断熱", has_vertical_internal: str = "有",
                                 ac_method: str = "ot", interval: str = "1h",
-                                c_value: float = 2.0, inside_pressure: str = "negative") -> Dict[str, Any]:
+                                c_value: float = 2.0, inside_pressure: str = "negative",
+                                include_verification: bool = True,
+                                verification_abs_tol: float = 1.0e-2,
+                                verification_rel_tol: float = 1.0e-2) -> Dict[str, Any]:
     """Create a Heat Load Calc input dictionary directly from simple inputs.
 
     Parameters match the revised simple-input specification: building type,
     region, floor areas by room use, total envelope area, UA, eta_AC, eta_AH,
     and the floor/foundation insulation distinction for detached houses.
+
+    If ``include_verification`` is True, the returned dictionary also contains
+    ``_simple_input_verification``, which compares the simple inputs with the
+    characteristics recalculated from the generated model.
     """
     est = _estimate_area_and_properties(region, total_floor_area, main_floor_area, other_floor_area,
                                         A_env, ua, eta_ah, eta_ac, tatekata, structure,
@@ -2109,6 +2310,20 @@ def create_heat_load_calc_input(region: int, total_floor_area: float, main_floor
         "equipments": {"heating_equipments": [h0, h1], "cooling_equipments": [c0, c1]},
         "_simple_input_summary": {k: _r2(v) for k, v in est["summary"].items()},
     }
+    if include_verification:
+        result["_simple_input_verification"] = verify_estimated_characteristics(
+            result,
+            region=region,
+            total_floor_area=total_floor_area,
+            main_floor_area=main_floor_area,
+            other_floor_area=other_floor_area,
+            A_env=A_env,
+            ua=ua,
+            eta_ah=eta_ah,
+            eta_ac=eta_ac,
+            abs_tol=verification_abs_tol,
+            rel_tol=verification_rel_tol,
+        )
     return result
 
 
@@ -2164,4 +2379,6 @@ if __name__ == "__main__":
         structure="基礎断熱",
         json_path="test.json",
     )
+    if "_simple_input_verification" in sample:
+        print_verification_report(sample["_simple_input_verification"])
     print(json.dumps(sample, ensure_ascii=False, indent=2))
