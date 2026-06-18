@@ -45,12 +45,27 @@ class HeatLoadModel:
         self.has_uf = (building_type == "detached" and not self.is_floor_ins)
         self.ref = ref.get_reference(building_type, self.is_floor_ins)
 
-        # 床面積（3.4.2.1）
+        # ---- 非居室の床面積（3.4.3.1）------------------------------------
+        # 非居室 A_NR = max(A_A - A_MR - A_OR, 0)
+        # （主たる居室・その他居室を除いた残りを非居室とみなす。負値は0で頭打ち）
         A_NR = max(A_A - A_MR - A_OR, 0.0)
         self.A = {"MR": float(A_MR), "OR": float(A_OR), "NR": A_NR}
         self.A_A = float(A_A)
 
-        self.spaces = list(SPACES) + (["UF"] if self.has_uf else [])
+        # ---- 出力する室数の設定（3.4.2）----------------------------------
+        # 入力パラメータによって暖冷房負荷モデルの室数が変わる。
+        #   3.4.2.1 戸建＋床断熱 / 集合住宅 → 主たる居室・その他居室・非居室の3室
+        #   3.4.2.2 戸建＋基礎断熱        → 上記3室＋床下空間(UF)の4室
+        # かつ、いずれの場合も「室用途ごとの床面積が0m2となる室は除く」
+        # （3.4.2.1・3.4.2.2 のただし書き）。
+        #   occ_spaces : 床面積>0 の居室(MR/OR/NR)のみを残した「有効居室」リスト
+        #   spaces     : occ_spaces に、戸建基礎断熱のときだけ UF を加えた全空間リスト
+        # 以降の各推定メソッド(_s3_4_*)と境界生成(hlc_builder)は、すべて
+        # self.spaces / self.occ_spaces を基準に回し、除外された室は一切生成しない。
+        # UF(床下空間)は has_uf(戸建基礎断熱)のときのみ存在し、その床面積は常に>0
+        # のため、UFは床面積0による除外対象としない。
+        self.occ_spaces = [s for s in SPACES if self.A[s] > 0.0]
+        self.spaces = list(self.occ_spaces) + (["UF"] if self.has_uf else [])
         self.nu = ref.direction_factor(self.region)
         self.n_h, self.n_c = ref.hc_days(self.region)
         # 自然風換気回数（未指定時の既定値: 居室5回/h, 床下0回/h）
@@ -110,7 +125,9 @@ class HeatLoadModel:
         sum_btm = sum(self.A_btm.values())
         sum_uf_vert = sum(self.A_vert["UF"].values()) if self.has_uf else 0.0
         self.A_env_vert_total = max(self.A_env_input - sum_top - sum_btm - sum_uf_vert, 0.0)
-        for s in SPACES:
+        # 居室(MR/OR/NR)のうち有効なものだけを対象とする（3.4.2 で除外済みの
+        # 0m2居室は self.A_vert に枠が無いため、必ず occ_spaces で回す）。
+        for s in self.occ_spaces:
             A_vert_s = self.A_env_vert_total * (self.A[s] / self.A_A) if self.A_A > 0 else 0.0
             ref_vert_sum = self.ref.vert_total(s)
             # 3.4.2.3.3 方位別
@@ -191,17 +208,18 @@ class HeatLoadModel:
             return (sum(self.ref.win(d, s) for d in VERT)
                     + sum(self.ref.door(d, s) for d in VERT))
         weight = {}
-        for s in SPACES:
+        # 開口部は居室にのみ配分する。3.4.2 で除外された0m2居室は対象外。
+        for s in self.occ_spaces:
             Aref = self.ref.floor.get(s, 0.0)
             weight[s] = self.A[s] * (op_ref(s) / Aref) if Aref > 0 else 0.0
         wsum = sum(weight.values())
         self.A_env_op_r = {s: (self.A_env_op * weight[s] / wsum if wsum > 0 else 0.0)
-                           for s in SPACES}
+                           for s in self.occ_spaces}
 
         # 3.4.2.5.3 窓面積（方位別）
         self.A_win = {s: {d: 0.0 for d in VERT} for s in self.spaces}
         self.A_door = {s: {d: 0.0 for d in VERT} for s in self.spaces}
-        for s in SPACES:
+        for s in self.occ_spaces:
             denom = (sum(self.ref.win(d, s) for d in VERT)
                      + sum(self.ref.door(d, s) for d in VERT))
             for d in VERT:
@@ -250,23 +268,36 @@ class HeatLoadModel:
 
     # ---- 3.4.2.9 間仕切り・内壁床 ------------------------------------------
     def _s3_4_2_9(self):
-        # 3.4.2.9.1 間仕切り
+        # ---- 3.4.2.9.1 間仕切り壁 ----------------------------------------
+        # 参照住戸の間仕切り面積に、暖冷房負荷モデルと参照住戸の両室合計垂直外皮
+        # 面積比を乗じて求める。3.4.2 で居室が除外され得るため、両室とも有効居室
+        # (occ_spaces)であるペアのみを対象とする（存在しない室への間仕切りは作らない）。
         self.partition = {}
-        pairs = [("MR", "OR"), ("MR", "NR"), ("OR", "NR")]
+        cand_pairs = [("MR", "OR"), ("MR", "NR"), ("OR", "NR")]
+        pairs = [(r1, r2) for (r1, r2) in cand_pairs
+                 if r1 in self.occ_spaces and r2 in self.occ_spaces]
         for (r1, r2) in pairs:
             ref_p = self.ref.partition_area(r1, r2)
             ref_v = self.ref.vert_total(r1) + self.ref.vert_total(r2)
             mdl_v = self._vert_total_model(r1) + self._vert_total_model(r2)
             self.partition[(r1, r2)] = ref_p * (mdl_v / ref_v) if ref_v > 0 else 0.0
-        # 3.4.2.9.2 内壁床
+
+        # ---- 3.4.2.9.2 内壁床 --------------------------------------------
+        # 空間ごと総内壁床 = 設計住戸の床面積 - 暖冷房負荷モデルの下面外皮面積。
         self.A_inner_floor_space = {}  # 空間ごと総内壁床
         for s in self.spaces:
             self.A_inner_floor_space[s] = max(self.A.get(s, 0.0) - self.A_btm.get(s, 0.0), 0.0)
+        # 参照住戸の (r1→r2) 内壁床比で按分する。接続先 r2 は「実在する空間
+        # (self.spaces)」に限定する（3.4.2 で除外された室への内壁床は生成しない）。
+        # ※注意：接続先 r2 が除外された場合、その配分先を失った内壁床面積は計上され
+        #   ない。現実的に除外が起こりやすい NR は、他室の内壁床の接続先になっていない
+        #   （表12で *→NR は (NR→NR) 自己を除き0）ため、通常ケースでは面積保存に影響
+        #   しない。一方 MR/OR が0m2で除外される特殊ケースでは r1 の総内壁床の一部が
+        #   欠落しうる（仕様未定義のため要確認）。
         self.inner_floor = {}
-        targets = ALL = ref.ALL_SPACES
         for r1 in self.spaces:
             ref_tot = self.ref.inner_floor_total(r1)
-            for r2 in ALL:
+            for r2 in self.spaces:
                 ref_pair = self.ref.inner_floor_area(r1, r2)
                 if ref_tot > 0 and ref_pair > 0:
                     self.inner_floor[(r1, r2)] = self.A_inner_floor_space[r1] * (ref_pair / ref_tot)

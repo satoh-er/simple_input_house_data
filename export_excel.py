@@ -211,12 +211,13 @@ def export(m, results, path, model_label):
     for i, h in enumerate(head4, 1):
         ws4.cell(row=3, column=i, value=h)
     _style_header(ws4, 3, len(head4))
-    from hlc_builder import ROOM_ID
+    from hlc_builder import room_id_map
+    rid = room_id_map(m)   # 3.4.2/3.5.3 実在室の連番room_id
     rr = 4
     for s in m.spaces:
         h = 0.4 if s == "UF" else 2.4
         af = m.A_UF if s == "UF" else m.A[s]
-        vals = [ROOM_ID[s], SPACE_JP[s], round(af, 3), h, round(m.V[s], 3),
+        vals = [rid[s], SPACE_JP[s], round(af, 3), h, round(m.V[s], 3),
                 m.n_r.get(s, 0.0), round(m.Q_ntrl[s], 3)]
         for i, v in enumerate(vals, 1):
             ws4.cell(row=rr, column=i, value=v).border = BORDER
@@ -228,6 +229,7 @@ def export(m, results, path, model_label):
 
     # ===== Sheet5 境界一覧 =====
     from hlc_builder import build as build_hlc
+    from hlc_builder import room_id_map as _rid_map
     hlc = build_hlc(m)
     ws5 = wb.create_sheet("境界一覧")
     ws5["A1"] = "境界一覧（heat_load_calc boundaries）"
@@ -238,7 +240,7 @@ def export(m, results, path, model_label):
         ws5.cell(row=3, column=i, value=h)
     _style_header(ws5, 3, len(head5))
     rr = 4
-    rid2name = {0: "MR", 1: "OR", 2: "NR", 3: "UF"}
+    rid2name = {i: s for s, i in _rid_map(m).items()}  # 連番room_id→空間記号
     for b in hlc["boundaries"]:
         # 一般部位のU値は層から逆算（表示用）
         u = b.get("u_value")

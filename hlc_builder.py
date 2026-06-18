@@ -16,12 +16,29 @@ import reference_data as ref
 VERT = ref.VERT_DIRS
 DIR_HLC = {"north": "n", "east": "e", "south": "s", "west": "w",
            "top": "top", "bottom": "bottom"}
-ROOM_ID = {"MR": 0, "OR": 1, "NR": 2, "UF": 3}
+ROOM_ID = {"MR": 0, "OR": 1, "NR": 2, "UF": 3}  # 3.5.3 正準ID（除外が無い場合の基準）
+ROOM_ORDER = ["MR", "OR", "NR", "UF"]            # room_id を割り当てる正準順
 ROOM_NAME = {"MR": "main_occupant_room", "OR": "other_occupant_room",
              "NR": "non_occupant_room", "UF": "under_floor"}
 SCHEDULE = {"MR": "main_occupant_room", "OR": "other_occupant_room",
             "NR": "non_occupant_room", "UF": "zero"}
 HC_WALL, HC_ROOF, HC_FLOOR = None, None, None  # 初期化時にCSVから
+
+
+def room_id_map(m):
+    """モデルに実在する室(m.spaces)へ 0 始まりの連番 room_id を割り当てて返す。
+
+    3.4.2 の「室数の設定」により、床面積0の室は m.spaces から除外されている
+    （入力パラメータによって室数は3室/4室、さらに除外により2室等にもなる）。
+    heat_load_calc は room_id が 0 始まりの連番であることを前提とするため、
+    正準順 (MR→OR→NR→UF) を保ったまま詰め直して連番化する（3.5.3）。
+      例) NR が除外された戸建基礎断熱 → {"MR": 0, "OR": 1, "UF": 2}
+      例) OR が除外された集合住宅     → {"MR": 0, "NR": 1}
+    境界の connected_room_id・換気 route・設備 space_id は、すべて本マップを
+    通して採番すること（固定の ROOM_ID を直接使わない）。
+    """
+    ordered = [s for s in ROOM_ORDER if s in m.spaces]
+    return {s: i for i, s in enumerate(ordered)}
 
 R_SO = 0.04   # 3.5.4.1 室外側熱伝達抵抗
 R_SI_WIN = 0.11  # 3.5.4.2 窓・ドアの室内側熱抵抗
@@ -55,6 +72,8 @@ def _layers_for(bt, part, d_ins=None):
 
 def build(m):
     bt = m.bt
+    # 3.4.2/3.5.3：実在する室にのみ 0始まりの連番 room_id を割り当てる
+    rid = room_id_map(m)
     boundaries = []
     bid = [0]
 
@@ -76,7 +95,7 @@ def build(m):
             "id": next_id(),
             "name": f"{ROOM_NAME[s]}_{part}_{d}",
             "sub_name": "",
-            "connected_room_id": ROOM_ID[s],
+            "connected_room_id": rid[s],
             "boundary_type": "external_general_part",
             "area": round(area, 4),
             "is_sun_striked_outside": True,
@@ -112,7 +131,7 @@ def build(m):
             "id": next_id(),
             "name": f"{ROOM_NAME[s]}_nonext_{part}_{d}",
             "sub_name": "",
-            "connected_room_id": ROOM_ID[s],
+            "connected_room_id": rid[s],
             "boundary_type": "external_general_part",
             "area": round(area, 4),
             "is_sun_striked_outside": False,
@@ -142,7 +161,7 @@ def build(m):
                 "id": next_id(),
                 "name": f"{ROOM_NAME[s]}_window_{d}",
                 "sub_name": "",
-                "connected_room_id": ROOM_ID[s],
+                "connected_room_id": rid[s],
                 "boundary_type": "external_transparent_part",
                 "area": round(area, 4),
                 "is_sun_striked_outside": True,
@@ -171,7 +190,7 @@ def build(m):
                 "id": next_id(),
                 "name": f"{ROOM_NAME[s]}_door_{d}",
                 "sub_name": "",
-                "connected_room_id": ROOM_ID[s],
+                "connected_room_id": rid[s],
                 "boundary_type": "external_opaque_part",
                 "area": round(area, 4),
                 "is_sun_striked_outside": True,
@@ -192,16 +211,19 @@ def build(m):
     for (r1, r2), area in m.partition.items():
         if area <= 1e-9:
             continue
+        # 3.4.2 で除外された室への間仕切りは生成しない（防御的ガード）
+        if r1 not in rid or r2 not in rid:
+            continue
         id_a = next_id()
         id_b = next_id()
         lay = _layers_for(bt, "partition")
         add({"id": id_a, "name": f"partition_{r1}_to_{r2}", "sub_name": "",
-             "connected_room_id": ROOM_ID[r1], "boundary_type": "internal",
+             "connected_room_id": rid[r1], "boundary_type": "internal",
              "area": round(area, 4), "rear_surface_boundary_id": id_b,
              "is_solar_absorbed_inside": False, "is_floor": False,
              "h_c": _hc("wall"), "inside_emissivity": EMISS, "layers": lay})
         add({"id": id_b, "name": f"partition_{r2}_to_{r1}", "sub_name": "",
-             "connected_room_id": ROOM_ID[r2], "boundary_type": "internal",
+             "connected_room_id": rid[r2], "boundary_type": "internal",
              "area": round(area, 4), "rear_surface_boundary_id": id_a,
              "is_solar_absorbed_inside": False, "is_floor": False,
              "h_c": _hc("wall"), "inside_emissivity": EMISS, "layers": list(reversed(lay))})
@@ -212,9 +234,12 @@ def build(m):
     for (r1, r2), area in m.inner_floor.items():
         if area <= 1e-9:
             continue
+        # 3.4.2 で除外された室に接する内壁床は生成しない（防御的ガード）
+        if r1 not in rid or r2 not in rid:
+            continue
         if r1 == r2:
             add({"id": next_id(), "name": f"inner_floor_{r1}_self", "sub_name": "",
-                 "connected_room_id": ROOM_ID[r1], "boundary_type": "external_general_part",
+                 "connected_room_id": rid[r1], "boundary_type": "external_general_part",
                  "area": round(area, 4), "is_sun_striked_outside": False,
                  "temp_dif_coef": 0.0, "is_solar_absorbed_inside": True, "is_floor": True,
                  "h_c": _hc("floor"), "inside_emissivity": EMISS,
@@ -226,12 +251,12 @@ def build(m):
             id_b = next_id()
             lay = _layers_for(bt, "inner_floor")
             add({"id": id_a, "name": f"inner_floor_{r1}_to_{r2}", "sub_name": "",
-                 "connected_room_id": ROOM_ID[r1], "boundary_type": "internal",
+                 "connected_room_id": rid[r1], "boundary_type": "internal",
                  "area": round(area, 4), "rear_surface_boundary_id": id_b,
                  "is_solar_absorbed_inside": True, "is_floor": True,
                  "h_c": _hc("floor"), "inside_emissivity": EMISS, "layers": lay})
             add({"id": id_b, "name": f"inner_floor_{r2}_to_{r1}", "sub_name": "",
-                 "connected_room_id": ROOM_ID[r2], "boundary_type": "internal",
+                 "connected_room_id": rid[r2], "boundary_type": "internal",
                  "area": round(area, 4), "rear_surface_boundary_id": id_a,
                  "is_solar_absorbed_inside": False, "is_floor": False,
                  "h_c": _hc("wall"), "inside_emissivity": EMISS, "layers": list(reversed(lay))})
@@ -239,16 +264,17 @@ def build(m):
     # ---- 土間床中央部（基礎断熱: ground 境界）-----------------------------
     if m.has_uf and m.A_UF > 1e-9:
         add({"id": next_id(), "name": "under_floor_earth", "sub_name": "",
-             "connected_room_id": ROOM_ID["UF"], "boundary_type": "ground",
+             "connected_room_id": rid["UF"], "boundary_type": "ground",
              "area": round(m.A_UF, 4), "is_solar_absorbed_inside": True, "is_floor": True,
              "h_c": _hc("floor"), "inside_emissivity": EMISS,
              "layers": _layers_for(bt, "ground_floor")})
 
     # ---- rooms -------------------------------------------------------------
+    # 3.4.2 で実在する室のみを、rid の連番 room_id で出力する。
     rooms = []
     for s in m.spaces:
         rooms.append({
-            "id": ROOM_ID[s], "name": ROOM_NAME[s], "sub_name": "",
+            "id": rid[s], "name": ROOM_NAME[s], "sub_name": "",
             "floor_area": round(m.A.get(s, m.A_UF if s == "UF" else 0.0), 4),
             "volume": round(m.V[s], 4),
             "ventilation": {"natural": round(m.Q_ntrl[s], 4)},
@@ -257,10 +283,22 @@ def build(m):
         })
 
     # ---- mechanical_ventilations（3.5.5）----------------------------------
-    mvs = [
-        {"id": 0, "root_type": "type3", "volume": round(m.V["MR"] * 0.5, 4), "route": [0, 2]},
-        {"id": 1, "root_type": "type3", "volume": round(m.V["OR"] * 0.5, 4), "route": [1, 2]},
-    ]
+    # 仕様3.5.5は MR起点(route 0,2) と OR起点(route 1,2) の第3種換気2系統を定義
+    # （いずれも非居室NRを経由して排気）。3.4.2 で居室が除外され得るため、
+    #   ・給気起点(MR/OR)が実在する系統のみ生成
+    #   ・経由先の NR が実在する場合のみ route に NR を含める
+    # とする。room_id は rid で採番し、給気量は当該室容積の0.5倍（仕様3.5.5）。
+    # ※起点室や経由NRが除外された場合の扱いは仕様に明記が無いため、上記は
+    #   「存在する室のみで経路を張る」という保守的な解釈（要確認）。
+    mvs = []
+    mv_id = 0
+    for src in ("MR", "OR"):
+        if src not in rid:
+            continue
+        route = [rid[src]] + ([rid["NR"]] if "NR" in rid else [])
+        mvs.append({"id": mv_id, "root_type": "type3",
+                    "volume": round(m.V[src] * 0.5, 4), "route": route})
+        mv_id += 1
 
     # ---- equipments（3.5.6）-----------------------------------------------
     import math
@@ -283,16 +321,18 @@ def build(m):
                              "v_min": round(vmin(qmax), 4), "v_max": round(vmax(qmax), 4),
                              "bf": 0.2}}
 
-    equipments = {
-        "heating_equipments": [
-            equip("heating_equipment for MR", 0, heat_qmax(m.A["MR"])),
-            equip("heating_equipment for OR", 1, heat_qmax(m.A["OR"])),
-        ],
-        "cooling_equipments": [
-            equip("cooling_equipment for MR", 0, cool_qmax(m.A["MR"])),
-            equip("cooling_equipment for OR", 1, cool_qmax(m.A["OR"])),
-        ],
-    }
+    # 仕様3.5.6は MR・OR に暖房機器/冷房機器を各1台定義（space_id=各室のID）。
+    # 3.4.2 で MR/OR が0m2により除外された場合は、その室向け機器を生成しない。
+    # space_id は rid で採番（仕様3.5.6のOR冷房 space_id は誤記と判断し当該室IDを使用）。
+    equipments = {"heating_equipments": [], "cooling_equipments": []}
+    for src in ("MR", "OR"):
+        if src not in rid:
+            continue
+        sid = rid[src]
+        equipments["heating_equipments"].append(
+            equip(f"heating_equipment for {src}", sid, heat_qmax(m.A[src])))
+        equipments["cooling_equipments"].append(
+            equip(f"cooling_equipment for {src}", sid, cool_qmax(m.A[src])))
 
     common = {
         "ac_method": "air_temperature",
