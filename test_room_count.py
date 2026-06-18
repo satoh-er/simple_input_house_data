@@ -44,14 +44,20 @@ def check(label, **kw):
     bad_rear = [b["id"] for b in hlc["boundaries"]
                 if b.get("rear_surface_boundary_id") is not None
                 and bs.get(b["rear_surface_boundary_id"], {}).get("rear_surface_boundary_id") != b["id"]]
+    # 床面積保存（3.4.3.9.2）：is_floor境界の室別合計 = 室床面積
+    floor_sum = {}
+    for b in hlc["boundaries"]:
+        if b.get("is_floor"):
+            floor_sum[b["connected_room_id"]] = floor_sum.get(b["connected_room_id"], 0.0) + b["area"]
+    floor_ok = all(abs(r["floor_area"] - floor_sum.get(r["id"], 0.0)) < 1e-3 for r in rooms)
     res = vfy.verify(m, tol=0.5)
     repro = all(res[k]["ok"] for k in ("A_A", "A_MR", "A_OR", "A_env", "UA", "etaA"))
 
     ok = (contiguous and vol_ok and not bad_bnd and not bad_mv
-          and not bad_eq and not bad_rear and repro)
+          and not bad_eq and not bad_rear and floor_ok and repro)
     print(f"[{'PASS' if ok else 'FAIL'}] {label}")
     print(f"       spaces={m.spaces} room_id={ids} "
-          f"連番={contiguous} 容積>0={vol_ok} 再現={repro}")
+          f"連番={contiguous} 容積>0={vol_ok} 床面積保存={floor_ok} 再現={repro}")
     if bad_bnd or bad_mv or bad_eq or bad_rear:
         print(f"       不正: 接室={bad_bnd} route={bad_mv} 設備={bad_eq} 裏面={bad_rear}")
     return ok
@@ -73,6 +79,11 @@ CASES = [
     ("OR=0 集合住宅→2室", dict(building_type="apartment", A_MR=40.0, A_OR=0.0,
         A_A=70.0, region=6, A_env=238.22, UA=1.20, eta_AC=2.8, eta_AH=4.3)),
     ("MR単室 戸建床断熱→1室", dict(building_type="detached", A_MR=120.08, A_OR=0.0,
+        A_A=120.08, region=6, A_env=307.51, UA=0.87, eta_AC=2.8, eta_AH=4.3, is_floor_ins=True)),
+    # MR除外（3.4.3.9.2 内壁床の付け替え：OR→MR・NR→MR 分を OR・NR 自身へ）
+    ("MR=0 戸建基礎断熱→3室(OR/NR/UF)", dict(building_type="detached", A_MR=0.0, A_OR=51.35,
+        A_A=120.08, region=6, A_env=307.51, UA=0.87, eta_AC=2.8, eta_AH=4.3, is_floor_ins=False)),
+    ("MR=0 戸建床断熱→2室(OR/NR)", dict(building_type="detached", A_MR=0.0, A_OR=51.35,
         A_A=120.08, region=6, A_env=307.51, UA=0.87, eta_AC=2.8, eta_AH=4.3, is_floor_ins=True)),
 ]
 

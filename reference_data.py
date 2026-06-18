@@ -5,7 +5,7 @@ reference_data.py
 data/ 配下の CSV を読み込み、暖冷房負荷モデル構築に必要な参照データを
 構造化して供給するローダ。計算ロジックはここを通してのみ参照データに触れる。
 
-床断熱/基礎断熱（is_floor_ins）による参照住戸の 0 埋め（表8注記・表12注記）も
+床断熱/基礎断熱（is_floor_ins）による参照住戸の 0 埋め（表14注記・表18注記）も
 本モジュールで適用する。
 ==============================================================================
 """
@@ -63,7 +63,7 @@ class Reference:
             if r["building_type"] != bt:
                 continue
             self.area[r["part"]].setdefault(r["direction"], {})[r["space"]] = float(r["area"])
-        # 床断熱/基礎断熱による 0 埋め（表8注記）
+        # 床断熱/基礎断熱による 0 埋め（表14注記）
         if bt == "detached":
             if self.is_floor_ins:
                 # 床断熱: 床下空間の n/e/s/w/bottom を 0
@@ -87,7 +87,7 @@ class Reference:
             if r["building_type"] != bt:
                 continue
             v = float(r["area"])
-            # 床断熱時は *->UF を 0（表12注記）
+            # 床断熱時は *->UF を 0（表18注記）
             if self.is_floor_ins and r["space2"] == "UF":
                 v = 0.0
             self.inner_floor[(r["space1"], r["space2"])] = v

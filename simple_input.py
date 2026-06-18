@@ -6,7 +6,7 @@ simple_input.py
 入力パラメータから、動的熱負荷計算エンジン（Heat Load Calc）が必要とする
 詳細な暖冷房負荷モデルを構築するモジュール。
 
-メソッドは仕様書の節番号に対応させている（例: _s3_4_2_1 = 3.4.2.1）。
+メソッドは仕様書の節番号に対応させている（例: _s3_4_3_2 = 3.4.3.2）。
 参照データは reference_data 経由で CSV から取得し、本ファイルに数値の
 ハードコードは置かない（窓η上下限など仕様本文中の固定値を除く）。
 ==============================================================================
@@ -17,16 +17,16 @@ import reference_data as ref
 VERT = ref.VERT_DIRS                 # ["north","east","south","west"]
 SPACES = ref.SPACES                  # ["MR","OR","NR"]
 
-# 3.4.9 窓の垂直入射時日射熱取得率の上下限（仕様本文の固定値）
+# 3.4.10 窓の垂直入射時日射熱取得率の上下限（仕様本文の固定値）
 ETA_WIN_MIN = 0.10
 ETA_WIN_MAX = 0.73
 GLASS_AREA_RATIO = 0.8
-# 3.4.8 不透明部位の日射取得換算係数（α・R_so 相当の固定値）
+# 3.4.9 不透明部位の日射取得換算係数（α・R_so 相当の固定値）
 M_OPAQUE_COEF = 0.034
-# 集合住宅 r_env,ex ロジスティック係数（3.4.2.4.1）
+# 集合住宅 r_env,ex ロジスティック係数（3.4.3.4.1）
 REX_A = 9.10907512
 REX_B = 1.05204145
-# 開口部比 r_env,op ロジスティック係数（3.4.2.5.1）
+# 開口部比 r_env,op ロジスティック係数（3.4.3.5.1）
 ROP_A = 0.129
 ROP_B = 13.35
 
@@ -80,47 +80,47 @@ class HeatLoadModel:
         return ref.temp_diff(key)
 
     def _build(self):
-        self._s3_4_2_2()   # 水平外皮（上面・下面）
-        self._s3_4_2_3()   # 垂直外皮
-        self._s3_4_2_4()   # 外気に接する外皮
-        self._s3_4_2_5()   # 開口部（窓・ドア）
-        self._s3_4_2_6_7() # 外壁等・外気に接しない外皮
-        self._s3_4_2_8()   # 土間床外周長
-        self._s3_4_2_9()   # 間仕切り・内壁床
-        self._s3_4_3()     # 室容積
-        self._s3_4_4()     # 自然風換気量
-        self._s3_4_5()     # 熱貫流率
-        self._s3_4_6()     # 断熱材厚さ
-        self._s3_4_7_8_9() # 平均日射熱取得率目標・窓η・補正
+        self._s3_4_3_2()   # 水平外皮（上面・下面）
+        self._s3_4_3_3()   # 垂直外皮
+        self._s3_4_3_4()   # 外気に接する外皮
+        self._s3_4_3_5()   # 開口部（窓・ドア）
+        self._s3_4_3_6_7() # 外壁等・外気に接しない外皮
+        self._s3_4_3_8()   # 土間床外周長
+        self._s3_4_3_9()   # 間仕切り・内壁床
+        self._s3_4_4()     # 室容積
+        self._s3_4_5()     # 自然風換気量
+        self._s3_4_6()     # 熱貫流率
+        self._s3_4_7()     # 断熱材厚さ
+        self._s3_4_8_9_10() # 平均日射熱取得率目標・窓η・補正
 
-    # ---- 3.4.2.2 水平外皮（上面・下面）------------------------------------
-    def _s3_4_2_2(self):
+    # ---- 3.4.3.2 水平外皮（上面・下面）------------------------------------
+    def _s3_4_3_2(self):
         self.A_top = {}
         self.A_btm = {}
         for s in self.spaces:
             Ar = self.A.get(s, 0.0)
             Aref = self.ref.floor.get(s, 0.0)
-            # 上面（3.4.2.2.1）: UF は 0
+            # 上面（3.4.3.2.1）: UF は 0
             if s == "UF":
                 self.A_top[s] = 0.0
             else:
                 self.A_top[s] = self.ref.env("top", s) * (Ar / Aref) if Aref > 0 else 0.0
-            # 下面（3.4.2.2.2）
+            # 下面（3.4.3.2.2）
             if s == "UF":
                 self.A_btm[s] = self.ref.env("bottom", "UF") * (self.A_A / self.ref.A_A)
             else:
                 self.A_btm[s] = self.ref.env("bottom", s) * (Ar / Aref) if Aref > 0 else 0.0
 
-    # ---- 3.4.2.3 垂直外皮 --------------------------------------------------
-    def _s3_4_2_3(self):
-        # 3.4.2.3.1 床下空間の方位別垂直外皮（基礎壁）
+    # ---- 3.4.3.3 垂直外皮 --------------------------------------------------
+    def _s3_4_3_3(self):
+        # 3.4.3.3.1 床下空間の方位別垂直外皮（基礎壁）
         self.A_vert = {s: {d: 0.0 for d in VERT} for s in self.spaces}
         if self.has_uf:
             ref_uf_btm = self.ref.env("bottom", "UF")
             ratio = (self.A_btm["UF"] / ref_uf_btm) if ref_uf_btm > 0 else 0.0
             for d in VERT:
                 self.A_vert["UF"][d] = self.ref.env(d, "UF") * ratio
-        # 3.4.2.3.2 居室の総垂直外皮
+        # 3.4.3.3.2 居室の総垂直外皮
         sum_top = sum(self.A_top.values())
         sum_btm = sum(self.A_btm.values())
         sum_uf_vert = sum(self.A_vert["UF"].values()) if self.has_uf else 0.0
@@ -130,7 +130,7 @@ class HeatLoadModel:
         for s in self.occ_spaces:
             A_vert_s = self.A_env_vert_total * (self.A[s] / self.A_A) if self.A_A > 0 else 0.0
             ref_vert_sum = self.ref.vert_total(s)
-            # 3.4.2.3.3 方位別
+            # 3.4.3.3.3 方位別
             for d in VERT:
                 self.A_vert[s][d] = (A_vert_s * self.ref.env(d, s) / ref_vert_sum
                                      if ref_vert_sum > 0 else 0.0)
@@ -146,8 +146,8 @@ class HeatLoadModel:
             return self.A_btm[s]
         return self.A_vert[s][d]
 
-    # ---- 3.4.2.4 外気に接する外皮 ------------------------------------------
-    def _s3_4_2_4(self):
+    # ---- 3.4.3.4 外気に接する外皮 ------------------------------------------
+    def _s3_4_3_4(self):
         sum_east = sum(self.A_vert[s]["east"] for s in self.spaces)
         sum_west = sum(self.A_vert[s]["west"] for s in self.spaces)
         sum_top = sum(self.A_top.values())
@@ -163,7 +163,7 @@ class HeatLoadModel:
         self.r_env_ex = r_ex
         self.A_env_ex = Aenv * r_ex
 
-        # 3.4.2.4.2 空間ごと方位ごとの外気接外皮
+        # 3.4.3.4.2 空間ごと方位ごとの外気接外皮
         A_var = (sum_top
                  + sum(self.A_vert[s]["south"] for s in self.spaces)
                  + sum(self.A_vert[s]["north"] for s in self.spaces))
@@ -196,14 +196,14 @@ class HeatLoadModel:
                             frac = r_var
                 self.A_env_rd_ex[s][d] = A_rd * frac
 
-    # ---- 3.4.2.5 開口部 ----------------------------------------------------
-    def _s3_4_2_5(self):
-        # 3.4.2.5.1 総開口部面積
+    # ---- 3.4.3.5 開口部 ----------------------------------------------------
+    def _s3_4_3_5(self):
+        # 3.4.3.5.1 総開口部面積
         r_op = 1.0 / (1.0 + math.exp(-ROP_A * (self.eta_AC - ROP_B)))
         self.r_env_op = r_op
         self.A_env_op = self.A_env_ex * r_op
 
-        # 3.4.2.5.2 空間ごと開口部面積
+        # 3.4.3.5.2 空間ごと開口部面積
         def op_ref(s):  # 参照住戸の空間別 窓+ドア合計
             return (sum(self.ref.win(d, s) for d in VERT)
                     + sum(self.ref.door(d, s) for d in VERT))
@@ -216,7 +216,7 @@ class HeatLoadModel:
         self.A_env_op_r = {s: (self.A_env_op * weight[s] / wsum if wsum > 0 else 0.0)
                            for s in self.occ_spaces}
 
-        # 3.4.2.5.3 窓面積（方位別）
+        # 3.4.3.5.3 窓面積（方位別）
         self.A_win = {s: {d: 0.0 for d in VERT} for s in self.spaces}
         self.A_door = {s: {d: 0.0 for d in VERT} for s in self.spaces}
         for s in self.occ_spaces:
@@ -228,7 +228,7 @@ class HeatLoadModel:
                 else:
                     raw = 0.0
                 self.A_win[s][d] = min(raw, self.A_env_rd_ex[s][d])
-            # 3.4.2.5.4 ドア面積（窓の後）
+            # 3.4.3.5.4 ドア面積（窓の後）
             for d in VERT:
                 if denom > 0:
                     raw = self.A_env_op_r[s] * self.ref.door(d, s) / denom
@@ -237,8 +237,8 @@ class HeatLoadModel:
                 cap = max(self.A_env_rd_ex[s][d] - self.A_win[s][d], 0.0)
                 self.A_door[s][d] = min(raw, cap)
 
-    # ---- 3.4.2.6 / 3.4.2.7 外壁等・外気に接しない外皮 ----------------------
-    def _s3_4_2_6_7(self):
+    # ---- 3.4.3.6 / 3.4.3.7 外壁等・外気に接しない外皮 ----------------------
+    def _s3_4_3_6_7(self):
         # 外気に接する外壁等（方位別, top/vert/bottom）
         self.A_wall_ex = {s: {} for s in self.spaces}
         for s in self.spaces:
@@ -252,8 +252,8 @@ class HeatLoadModel:
             for d in ["top"] + VERT + ["bottom"]:
                 self.A_in[s][d] = max(self._A_env_rd(s, d) - self.A_env_rd_ex[s][d], 0.0)
 
-    # ---- 3.4.2.8 土間床外周長 ----------------------------------------------
-    def _s3_4_2_8(self):
+    # ---- 3.4.3.8 土間床外周長 ----------------------------------------------
+    def _s3_4_3_8(self):
         if not self.has_uf:
             self.L_uf_ex = 0.0
             return
@@ -266,12 +266,13 @@ class HeatLoadModel:
                 total += ref_len * (model_wall_ex / ref_wall)
         self.L_uf_ex = total
 
-    # ---- 3.4.2.9 間仕切り・内壁床 ------------------------------------------
-    def _s3_4_2_9(self):
-        # ---- 3.4.2.9.1 間仕切り壁 ----------------------------------------
+    # ---- 3.4.3.9 間仕切り・内壁床 ------------------------------------------
+    def _s3_4_3_9(self):
+        # ---- 3.4.3.9.1 間仕切り壁 ----------------------------------------
         # 参照住戸の間仕切り面積に、暖冷房負荷モデルと参照住戸の両室合計垂直外皮
-        # 面積比を乗じて求める。3.4.2 で居室が除外され得るため、両室とも有効居室
-        # (occ_spaces)であるペアのみを対象とする（存在しない室への間仕切りは作らない）。
+        # 面積比を乗じて求める。【3.4.3.9.1 ただし書き】空間 r1 または r2 が除外
+        # されている場合は当該間仕切りはないものとするため、両室とも有効居室
+        # (occ_spaces)であるペアのみを対象とする。
         self.partition = {}
         cand_pairs = [("MR", "OR"), ("MR", "NR"), ("OR", "NR")]
         pairs = [(r1, r2) for (r1, r2) in cand_pairs
@@ -282,30 +283,37 @@ class HeatLoadModel:
             mdl_v = self._vert_total_model(r1) + self._vert_total_model(r2)
             self.partition[(r1, r2)] = ref_p * (mdl_v / ref_v) if ref_v > 0 else 0.0
 
-        # ---- 3.4.2.9.2 内壁床 --------------------------------------------
+        # ---- 3.4.3.9.2 内壁床 --------------------------------------------
         # 空間ごと総内壁床 = 設計住戸の床面積 - 暖冷房負荷モデルの下面外皮面積。
+        # （A_part,btm,r = max(A_r - A_env,r,btm, 0)）
         self.A_inner_floor_space = {}  # 空間ごと総内壁床
         for s in self.spaces:
             self.A_inner_floor_space[s] = max(self.A.get(s, 0.0) - self.A_btm.get(s, 0.0), 0.0)
-        # 参照住戸の (r1→r2) 内壁床比で按分する。接続先 r2 は「実在する空間
-        # (self.spaces)」に限定する（3.4.2 で除外された室への内壁床は生成しない）。
-        # ※注意：接続先 r2 が除外された場合、その配分先を失った内壁床面積は計上され
-        #   ない。現実的に除外が起こりやすい NR は、他室の内壁床の接続先になっていない
-        #   （表12で *→NR は (NR→NR) 自己を除き0）ため、通常ケースでは面積保存に影響
-        #   しない。一方 MR/OR が0m2で除外される特殊ケースでは r1 の総内壁床の一部が
-        #   欠落しうる（仕様未定義のため要確認）。
+        # 参照住戸の (r1→r2) 内壁床比で r1 の総内壁床を按分する。
+        # 【3.4.3.9.2 ただし書き】接続先 r2 が 3.4.2 で除外されている場合は、その面積を
+        #   捨てず、除外されていない室 r1 の床面積が担保されるように r1 自身へ接続する
+        #   内壁床（＝同一室用途間と同じ「温度差係数0の外気に接する床」, キー (r1,r1)）
+        #   へ合算する。これにより r1 の床面積（=外気接下面+内壁床の総和）が保存される。
+        #   なお r1 自身が除外された場合は A_inner_floor_space[r1] を生成しない
+        #   （上側の室が無く面積0のため、生存室側の内壁天井も発生しない）。
+        # 按分の分母 ref_tot は参照住戸の全接続先（除外室を含む）の合計を用いるので、
+        #   r2 が除外されても r1 へ配分される総量は変わらず、面積保存が成立する。
         self.inner_floor = {}
         for r1 in self.spaces:
-            ref_tot = self.ref.inner_floor_total(r1)
-            for r2 in self.spaces:
+            ref_tot = self.ref.inner_floor_total(r1)   # 参照住戸の全r2合計（除外室含む）
+            if ref_tot <= 0:
+                continue
+            for r2 in ref.ALL_SPACES:                  # 参照住戸の全接続先を走査
                 ref_pair = self.ref.inner_floor_area(r1, r2)
-                if ref_tot > 0 and ref_pair > 0:
-                    self.inner_floor[(r1, r2)] = self.A_inner_floor_space[r1] * (ref_pair / ref_tot)
-                else:
-                    self.inner_floor[(r1, r2)] = 0.0
+                if ref_pair <= 0:
+                    continue
+                area = self.A_inner_floor_space[r1] * (ref_pair / ref_tot)
+                # 接続先が実在すれば (r1,r2)、除外されていれば r1 自身 (r1,r1) へ合算
+                key = (r1, r2) if r2 in self.spaces else (r1, r1)
+                self.inner_floor[key] = self.inner_floor.get(key, 0.0) + area
 
-    # ---- 3.4.3 室容積 ------------------------------------------------------
-    def _s3_4_3(self):
+    # ---- 3.4.4 室容積 ------------------------------------------------------
+    def _s3_4_4(self):
         self.A_UF = self.A_btm.get("UF", 0.0)
         self.V = {}
         for s in self.spaces:
@@ -314,13 +322,13 @@ class HeatLoadModel:
             else:
                 self.V[s] = 2.4 * self.A[s]
 
-    # ---- 3.4.4 自然風換気量 ------------------------------------------------
-    def _s3_4_4(self):
+    # ---- 3.4.5 自然風換気量 ------------------------------------------------
+    def _s3_4_5(self):
         self.Q_ntrl = {s: self.V[s] * self.n_r.get(s, 0.0) for s in self.spaces}
 
-    # ---- 3.4.5 熱貫流率 ----------------------------------------------------
-    def _s3_4_5(self):
-        # 3.4.5.1 外気接面積の集計
+    # ---- 3.4.6 熱貫流率 ----------------------------------------------------
+    def _s3_4_6(self):
+        # 3.4.6.1 外気接面積の集計
         self.A_roof_ex = sum(self.A_wall_ex[s]["top"] for s in self.spaces)
         self.A_wall_neuf_ex = sum(self.A_wall_ex[s][d] for s in self.spaces if s != "UF"
                                   for d in VERT)
@@ -360,7 +368,7 @@ class HeatLoadModel:
         self.U["door"] = self.q_target["door"] / (H_vert * self.A_door_ex) if self.A_door_ex > 0 else 0.0
 
         if self.has_uf:
-            # 3.4.5.2.2 基礎断熱: 基礎壁 + 土間床外周ψ に按分
+            # 3.4.6.2.2 基礎断熱: 基礎壁 + 土間床外周ψ に按分
             q_spec_uf_wall = su("uf_wall") * self.A_wall_uf_ex * H_vert
             q_spec_uf_hb = su("uf_perimeter") * self.L_uf_ex * H_vert
             denom = q_spec_uf_wall + q_spec_uf_hb
@@ -370,13 +378,13 @@ class HeatLoadModel:
             self.psi_uf = qt_uf_hb / (H_vert * self.L_uf_ex) if self.L_uf_ex > 0 else 0.0
             self.U["floor"] = 0.0  # 基礎断熱では床(対外気床)は無し
         else:
-            # 3.4.5.2.1 床断熱
+            # 3.4.6.2.1 床断熱
             self.U["floor"] = self.q_target["floor"] / (H_floor * self.A_floor_ex) if self.A_floor_ex > 0 else 0.0
             self.U["uf_wall"] = 0.0
             self.psi_uf = 0.0
 
-    # ---- 3.4.6 断熱材厚さ --------------------------------------------------
-    def _s3_4_6(self):
+    # ---- 3.4.7 断熱材厚さ --------------------------------------------------
+    def _s3_4_7(self):
         self.d_ins = {}
 
         def thick(part, U):
@@ -393,14 +401,14 @@ class HeatLoadModel:
         elif self.bt == "detached":
             self.d_ins["floor"] = thick("floor", self.U["floor"])
 
-    # ---- 3.4.7〜3.4.9 平均日射熱取得率・窓η・補正 -------------------------
-    def _s3_4_7_8_9(self):
-        # 3.4.7 目標ηA
+    # ---- 3.4.8〜3.4.10 平均日射熱取得率・窓η・補正 -------------------------
+    def _s3_4_8_9_10(self):
+        # 3.4.8 目標ηA
         self.eta_A_target = ((self.eta_AC * self.n_c + self.eta_AH * self.n_h)
                              / (self.n_c + self.n_h))
         nu = self.nu
 
-        # 3.4.8 不透明部位の日射取得量 m_model_wall
+        # 3.4.9 不透明部位の日射取得量 m_model_wall
         m = 0.0
         m += self.U["roof"] * self.A_roof_ex * nu["top"]
         # 外壁（居室）
@@ -425,7 +433,7 @@ class HeatLoadModel:
         target_gain = self.eta_A_target * self.A_env_input / 100.0
         self.eta_win_temp = ((target_gain - self.m_model_wall) / denom) if denom > 0 else float("nan")
 
-        # 3.4.9 クリップと窓面積・U値補正
+        # 3.4.10 クリップと窓面積・U値補正
         et = self.eta_win_temp
         if math.isnan(et):
             eta_win = ETA_WIN_MIN

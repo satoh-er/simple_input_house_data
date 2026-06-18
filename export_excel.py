@@ -118,7 +118,7 @@ def export(m, results, path, model_label):
         r += 1
         note = (f"※ 窓の垂直入射時日射熱取得率 暫定値={results['_eta_win_temp']:.4f} が "
                 f"上下限[0.10, 0.73]を外れ、η={results['_eta_win']:.2f} にクリップ。"
-                f"仕様3.4.9により、この場合は総外皮面積 A_env が再現されない。")
+                f"仕様3.4.10により、この場合は総外皮面積 A_env が再現されない。")
         ws.cell(row=r, column=1, value=note).font = Font(name=FONT, size=9, italic=True)
         ws.cell(row=r, column=1).fill = WARN_FILL
         ws.merge_cells(start_row=r, start_column=1, end_row=r, end_column=5)
