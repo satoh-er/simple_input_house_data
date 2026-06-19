@@ -140,6 +140,13 @@ def build(m):
             "is_floor": (htype == "floor"),
             "h_c": _hc(htype),
             "inside_emissivity": EMISS,
+            # external_general_part は is_sun_striked_outside に関わらず、
+            # outside_solar_absorption(3.5.4.4)・outside_heat_transfer_resistance(3.5.4.1)・
+            # outside_emissivity(3.5.4.5) が常に必須（heat_load_calc input_boundary 仕様）。
+            # 界壁・界床は温度差係数0で外側条件は結果に影響しないが、スキーマ上必須。
+            "outside_solar_absorption": SOLAR_ABS,
+            "outside_heat_transfer_resistance": R_SO,
+            "outside_emissivity": EMISS,
             "layers": _layers_for(bt, part),
             "solar_shading_part": {"existence": False},
         })
@@ -239,14 +246,21 @@ def build(m):
             continue
         if r1 == r2:
             # 同一室用途間／除外室からの付け替え分（3.4.3.9.2）は「温度差係数0の
-            # 外気に接する床」として扱う＝外皮扱い。一般外皮と同様に室外側日射
-            # 吸収率 outside_solar_absorption を付与する（3.5.4.4: 0.8）。
+            # 外気に接する床」＝外皮扱い（external_general_part）。
+            # external_general_part は is_sun_striked_outside に関わらず、
+            #   outside_solar_absorption(3.5.4.4: 0.8)
+            #   outside_heat_transfer_resistance(3.5.4.1: 0.04)
+            #   outside_emissivity(3.5.4.5: 0.9)
+            # が常に必須（heat_load_calc input_boundary 仕様）。温度差係数0のため
+            # 外側条件は結果に影響しないが、スキーマ上は必須。
             add({"id": next_id(), "name": f"inner_floor_{r1}_self", "sub_name": "",
                  "connected_room_id": rid[r1], "boundary_type": "external_general_part",
                  "area": round(area, 4), "is_sun_striked_outside": False,
                  "temp_dif_coef": 0.0, "is_solar_absorbed_inside": True, "is_floor": True,
                  "h_c": _hc("floor"), "inside_emissivity": EMISS,
                  "outside_solar_absorption": SOLAR_ABS,
+                 "outside_heat_transfer_resistance": R_SO,
+                 "outside_emissivity": EMISS,
                  "layers": _layers_for(bt, "inner_floor"),
                  "solar_shading_part": {"existence": False}})
         else:
