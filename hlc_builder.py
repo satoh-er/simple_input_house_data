@@ -314,7 +314,7 @@ def build(m):
         if src not in rid:
             continue
         route = [rid[src]] + ([rid["NR"]] if "NR" in rid else [])
-        mvs.append({"id": mv_id, "root_type": "type3",
+        mvs.append({"id": mv_id, "route_type": "type3",
                     "volume": round(m.V[src] * 0.5, 4), "route": route})
         mv_id += 1
 
