@@ -238,11 +238,15 @@ def build(m):
         if r1 not in rid or r2 not in rid:
             continue
         if r1 == r2:
+            # 同一室用途間／除外室からの付け替え分（3.4.3.9.2）は「温度差係数0の
+            # 外気に接する床」として扱う＝外皮扱い。一般外皮と同様に室外側日射
+            # 吸収率 outside_solar_absorption を付与する（3.5.4.4: 0.8）。
             add({"id": next_id(), "name": f"inner_floor_{r1}_self", "sub_name": "",
                  "connected_room_id": rid[r1], "boundary_type": "external_general_part",
                  "area": round(area, 4), "is_sun_striked_outside": False,
                  "temp_dif_coef": 0.0, "is_solar_absorbed_inside": True, "is_floor": True,
                  "h_c": _hc("floor"), "inside_emissivity": EMISS,
+                 "outside_solar_absorption": SOLAR_ABS,
                  "layers": _layers_for(bt, "inner_floor"),
                  "solar_shading_part": {"existence": False}})
         else:
