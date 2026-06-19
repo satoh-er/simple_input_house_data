@@ -2,15 +2,11 @@
 """
 main.py
 ==============================================================================
-本スクリプトは2つのフェーズを実行する。
+代表ケースについて暖冷房負荷モデルを構築し、入力値の再現性を検証して、
+heat_load_calc 入力 JSON と一覧 Excel（モデル単位）を出力する。
 
- フェーズ1（成果物生成）:
-   代表3ケースについて暖冷房負荷モデルを構築し、入力値の再現性を検証して、
-   heat_load_calc 入力 JSON と一覧 Excel（モデル単位）を出力する。
-
- フェーズ2（室数設定の検証 / 3.4.2）:
-   test_room_count.py のテストケース（標準3ケース＋床面積0による室除外の
-   縮退ケース）を実行し、room_id 連番・容積>0・床面積保存・入力再現性を確認する。
+代表3ケース（戸建・基礎断熱／戸建・床断熱／集合住宅）に加え、入力により
+室数が少なくなる縮退ケース（3.4.2 ただし書き：床面積0の室を除く）も対象とする。
 ==============================================================================
 """
 import os
@@ -18,30 +14,49 @@ from simple_input import HeatLoadModel
 import verify as vfy
 import hlc_builder as hb
 import export_excel as ex
-import test_room_count as trc
 
-OUT = "/mnt/user-data/outputs"
+OUT = "./outputs"
 os.makedirs(OUT, exist_ok=True)
 
-# 成果物（JSON/Excel）を生成する代表ケース
 CASES = [
+    # ---- 標準3ケース（3室 または 4室）--------------------------------------
     dict(label="戸建_基礎断熱", building_type="detached",
          A_MR=29.81, A_OR=51.35, A_A=120.08, region=6, A_env=307.51,
-         UA=0.87, eta_AC=2.8, eta_AH=4.3, is_floor_ins=False),
+         UA=0.87, eta_AC=2.8, eta_AH=4.3, is_floor_ins=False),          # 4室
     dict(label="戸建_床断熱", building_type="detached",
          A_MR=29.81, A_OR=51.35, A_A=120.08, region=6, A_env=307.51,
-         UA=0.87, eta_AC=2.8, eta_AH=4.3, is_floor_ins=True),
+         UA=0.87, eta_AC=2.8, eta_AH=4.3, is_floor_ins=True),           # 3室
     dict(label="集合住宅", building_type="apartment",
          A_MR=24.23, A_OR=29.75, A_A=70.00, region=6, A_env=238.22,
-         UA=1.20, eta_AC=2.8, eta_AH=4.3, is_floor_ins=True),
+         UA=1.20, eta_AC=2.8, eta_AH=4.3, is_floor_ins=True),           # 3室
+
+    # ---- 室数が少なくなる縮退ケース（3.4.2 ただし書き：床面積0の室を除く）----
+    # 非居室 A_NR = max(A_A - A_MR - A_OR, 0) = 0 となり NR が除外される
+    dict(label="戸建_床断熱_NR0_2室", building_type="detached",
+         A_MR=60.00, A_OR=60.08, A_A=120.08, region=6, A_env=307.51,
+         UA=0.87, eta_AC=2.8, eta_AH=4.3, is_floor_ins=True),           # MR/OR の2室
+    dict(label="戸建_基礎断熱_NR0_3室", building_type="detached",
+         A_MR=60.00, A_OR=60.08, A_A=120.08, region=6, A_env=307.51,
+         UA=0.87, eta_AC=2.8, eta_AH=4.3, is_floor_ins=False),          # MR/OR/UF の3室
+    # その他居室 A_OR = 0 で OR が除外される
+    dict(label="集合住宅_OR0_2室", building_type="apartment",
+         A_MR=40.00, A_OR=0.00, A_A=70.00, region=6, A_env=238.22,
+         UA=1.20, eta_AC=2.8, eta_AH=4.3, is_floor_ins=True),           # MR/NR の2室
+    # 主たる居室のみ（OR=0 かつ A_A=A_MR で NR=0）
+    dict(label="戸建_床断熱_MR単室_1室", building_type="detached",
+         A_MR=120.08, A_OR=0.00, A_A=120.08, region=6, A_env=307.51,
+         UA=0.87, eta_AC=2.8, eta_AH=4.3, is_floor_ins=True),           # MR の1室
+    # 主たる居室 A_MR = 0 で MR が除外される（内壁床は生存室へ付け替え: 3.4.3.9.2）
+    dict(label="戸建_基礎断熱_MR0_3室", building_type="detached",
+         A_MR=0.00, A_OR=51.35, A_A=120.08, region=6, A_env=307.51,
+         UA=0.87, eta_AC=2.8, eta_AH=4.3, is_floor_ins=False),          # OR/NR/UF の3室
+    dict(label="戸建_床断熱_MR0_2室", building_type="detached",
+         A_MR=0.00, A_OR=51.35, A_A=120.08, region=6, A_env=307.51,
+         UA=0.87, eta_AC=2.8, eta_AH=4.3, is_floor_ins=True),           # OR/NR の2室
 ]
 
 
-def build_and_export():
-    """フェーズ1: 代表3ケースの構築・再現性検証・JSON/Excel 出力。"""
-    print("#" * 80)
-    print("# フェーズ1: 代表ケースの構築・検証・出力")
-    print("#" * 80)
+def run():
     for c in CASES:
         label = c.pop("label")
         m = HeatLoadModel(**c)
@@ -55,21 +70,10 @@ def build_and_export():
         hb.to_json(hlc, jpath)
         xpath = os.path.join(OUT, f"model_{label}.xlsx")
         ex.export(m, results, xpath, label)
-        print(f"  境界数={len(hlc['boundaries'])}, 室数={len(hlc['rooms'])}")
+        rooms = [r["name"] for r in hlc["rooms"]]
+        print(f"  境界数={len(hlc['boundaries'])}, 室数={len(hlc['rooms'])} {rooms}")
         print(f"  出力: {os.path.basename(jpath)}, {os.path.basename(xpath)}")
         c["label"] = label
-
-
-def run():
-    # フェーズ1: 成果物生成
-    build_and_export()
-    # フェーズ2: 室数設定（3.4.2）の検証ケースを実行
-    print()
-    print("#" * 80)
-    print("# フェーズ2: 室数設定（3.4.2）の検証")
-    print("#" * 80)
-    all_ok = trc.run()
-    return all_ok
 
 
 if __name__ == "__main__":
