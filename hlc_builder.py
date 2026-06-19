@@ -40,10 +40,17 @@ def room_id_map(m):
     ordered = [s for s in ROOM_ORDER if s in m.spaces]
     return {s: i for i, s in enumerate(ordered)}
 
-R_SO = 0.04   # 3.5.4.1 室外側熱伝達抵抗
+R_SO = 0.04   # 3.5.4.1 室外側熱伝達抵抗（一般外皮・窓・ドアの屋外側）
 R_SI_WIN = 0.11  # 3.5.4.2 窓・ドアの室内側熱抵抗
 EMISS = 0.9   # 3.5.4.5
 SOLAR_ABS = 0.8  # 3.5.4.4
+
+# 外気に接しない部位・内壁床の「裏面側」総合熱伝達抵抗。
+# 温度差係数0の界壁/界床/内壁床は、裏面に相手室の室内側表面があるとみなし、
+# その室内側総合熱伝達抵抗を outside_heat_transfer_resistance に与える（3.11・3.4.3.9.2）。
+R_SI_REAR_WALL = 0.11     # 界壁の裏面（相手室の壁面）
+R_SI_REAR_CEILING = 0.09  # 界床・内壁床の裏面（相手室の天井面）。3.4.3.9.2の裏面総合熱伝達抵抗
+R_SI_REAR_FLOOR = 0.15    # 外気に接しない屋根・天井の裏面（相手室の床面）※仕様未記載のため要確認
 
 
 def _hc(part_type):
@@ -124,7 +131,7 @@ def build(m):
             gen_ext(s, "bottom", m.A_wall_ex[s]["bottom"], "floor", "floor")
 
     # ---- 外気に接しない外皮（界壁・界床: temp_dif_coef 0）------------------
-    def gen_nonext(s, d, area, part, htype):
+    def gen_nonext(s, d, area, part, htype, r_rear):
         if area <= 1e-9:
             return
         add({
@@ -141,11 +148,12 @@ def build(m):
             "h_c": _hc(htype),
             "inside_emissivity": EMISS,
             # external_general_part は is_sun_striked_outside に関わらず、
-            # outside_solar_absorption(3.5.4.4)・outside_heat_transfer_resistance(3.5.4.1)・
+            # outside_solar_absorption(3.5.4.4)・outside_heat_transfer_resistance・
             # outside_emissivity(3.5.4.5) が常に必須（heat_load_calc input_boundary 仕様）。
-            # 界壁・界床は温度差係数0で外側条件は結果に影響しないが、スキーマ上必須。
+            # 界壁・界床は温度差係数0だが、裏面の相手室の室内側総合熱伝達抵抗を
+            # outside_heat_transfer_resistance として与える（界壁0.11 / 界床0.09, 3.11）。
             "outside_solar_absorption": SOLAR_ABS,
-            "outside_heat_transfer_resistance": R_SO,
+            "outside_heat_transfer_resistance": r_rear,
             "outside_emissivity": EMISS,
             "layers": _layers_for(bt, part),
             "solar_shading_part": {"existence": False},
@@ -153,10 +161,13 @@ def build(m):
 
     if bt == "apartment":
         for s in m.spaces:
-            gen_nonext(s, "top", m.A_in[s]["top"], "roof_in", "roof")
+            # 外気に接しない屋根・天井（界天井）: 裏面は相手室の床面
+            gen_nonext(s, "top", m.A_in[s]["top"], "roof_in", "roof", R_SI_REAR_FLOOR)
+            # 外気に接しない外壁（界壁）: 裏面は相手室の壁面 → 0.11
             for d in VERT:
-                gen_nonext(s, d, m.A_in[s][d], "wall_in", "wall")
-            gen_nonext(s, "bottom", m.A_in[s]["bottom"], "floor_in", "floor")
+                gen_nonext(s, d, m.A_in[s][d], "wall_in", "wall", R_SI_REAR_WALL)
+            # 外気に接しない床（界床）: 裏面は相手室の天井面 → 0.09
+            gen_nonext(s, "bottom", m.A_in[s]["bottom"], "floor_in", "floor", R_SI_REAR_CEILING)
 
     # ---- 窓（透明開口部）---------------------------------------------------
     for s in m.spaces:
@@ -249,17 +260,16 @@ def build(m):
             # 外気に接する床」＝外皮扱い（external_general_part）。
             # external_general_part は is_sun_striked_outside に関わらず、
             #   outside_solar_absorption(3.5.4.4: 0.8)
-            #   outside_heat_transfer_resistance(3.5.4.1: 0.04)
+            #   outside_heat_transfer_resistance（裏面は天井のため 0.09, 3.4.3.9.2）
             #   outside_emissivity(3.5.4.5: 0.9)
-            # が常に必須（heat_load_calc input_boundary 仕様）。温度差係数0のため
-            # 外側条件は結果に影響しないが、スキーマ上は必須。
+            # が常に必須（heat_load_calc input_boundary 仕様）。室内側は床（h_c=0.7）。
             add({"id": next_id(), "name": f"inner_floor_{r1}_self", "sub_name": "",
                  "connected_room_id": rid[r1], "boundary_type": "external_general_part",
                  "area": round(area, 4), "is_sun_striked_outside": False,
                  "temp_dif_coef": 0.0, "is_solar_absorbed_inside": True, "is_floor": True,
                  "h_c": _hc("floor"), "inside_emissivity": EMISS,
                  "outside_solar_absorption": SOLAR_ABS,
-                 "outside_heat_transfer_resistance": R_SO,
+                 "outside_heat_transfer_resistance": R_SI_REAR_CEILING,
                  "outside_emissivity": EMISS,
                  "layers": _layers_for(bt, "inner_floor"),
                  "solar_shading_part": {"existence": False}})
@@ -273,11 +283,12 @@ def build(m):
                  "area": round(area, 4), "rear_surface_boundary_id": id_b,
                  "is_solar_absorbed_inside": True, "is_floor": True,
                  "h_c": _hc("floor"), "inside_emissivity": EMISS, "layers": lay})
+            # 裏面(id_b)は r2 にとって天井となるため、対流熱伝達率は天井の 5.0 を用いる（3.11）。
             add({"id": id_b, "name": f"inner_floor_{r2}_to_{r1}", "sub_name": "",
                  "connected_room_id": rid[r2], "boundary_type": "internal",
                  "area": round(area, 4), "rear_surface_boundary_id": id_a,
                  "is_solar_absorbed_inside": False, "is_floor": False,
-                 "h_c": _hc("wall"), "inside_emissivity": EMISS, "layers": list(reversed(lay))})
+                 "h_c": _hc("roof"), "inside_emissivity": EMISS, "layers": list(reversed(lay))})
 
     # ---- 土間床中央部（基礎断熱: ground 境界）-----------------------------
     if m.has_uf and m.A_UF > 1e-9:
